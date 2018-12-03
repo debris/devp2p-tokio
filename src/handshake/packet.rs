@@ -11,9 +11,6 @@ const V4_ACK_PACKET_SIZE: usize = 210;
 // Amount of bytes added when encrypting with encryptECIES.
 const ECIES_OVERHEAD: usize = 113;
 
-#[derive(Debug, PartialEq)]
-pub struct AuthError;
-
 /// Helpers structure used for reading auth packet.
 pub(crate) struct RawAuthPacket([u8; V4_AUTH_PACKET_SIZE]);
 
@@ -36,8 +33,9 @@ impl AsMut<[u8]> for RawAuthPacket {
 }
 
 impl RawAuthPacket {
-	pub fn decrypt(&self, secret: &Secret) -> Result<AuthPacket, AuthError> {
-		let data = ecies::decrypt(secret, &[], &self.0).map_err(|_| AuthError)?;
+	pub fn decrypt(&self, secret: &Secret) -> io::Result<AuthPacket> {
+		let data = ecies::decrypt(secret, &[], &self.0)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt failed"))?;
 		let mut signature = H520::default();
 		let mut ecdh_public_hash = H256::default();
 		let mut public = H512::default();
@@ -57,24 +55,26 @@ impl RawAuthPacket {
 		Ok(packet)
 	}
 
-	pub fn decrypt_eip8_auth_packet_tail_size(&self) -> Result<usize, AuthError> {
+	pub fn decrypt_eip8_auth_packet_tail_size(&self) -> io::Result<usize> {
 		let total = ((u16::from(self.0[0]) << 8 | (u16::from(self.0[1]))) as usize) + 2;
 		if total < V4_AUTH_PACKET_SIZE {
-			return Err(AuthError);
+			return Err(io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt_eip8_auth_packet_tail_size failed"));
 		}
 		Ok(total - self.0.len())
 	}
 
-	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> Result<AuthPacketEip8, AuthError> {
+	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<AuthPacketEip8> {
 		let mut data = vec![0u8; V4_AUTH_PACKET_SIZE - 2 + tail.len()];
 		data[0..V4_AUTH_PACKET_SIZE - 2].copy_from_slice(&self.0[2..]);
 		data[V4_AUTH_PACKET_SIZE - 2..].copy_from_slice(tail);
-		let auth = ecies::decrypt(secret, &self.0[0..2], &data).map_err(|_| AuthError)?;
+		let auth = ecies::decrypt(secret, &self.0[0..2], &data)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt_eip8 failed"))?;
+		let err = |_| io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt_eip8 failed");
 		let rlp = Rlp::new(&auth);
-		let signature: H520 = rlp.val_at(0).map_err(|_| AuthError)?;
-		let public: Public = rlp.val_at(1).map_err(|_| AuthError)?;
-		let nonce: H256 = rlp.val_at(2).map_err(|_| AuthError)?;
-		let version: u64 = rlp.val_at(3).map_err(|_| AuthError)?;
+		let signature: H520 = rlp.val_at(0).map_err(err)?;
+		let public: Public = rlp.val_at(1).map_err(err)?;
+		let nonce: H256 = rlp.val_at(2).map_err(err)?;
+		let version: u64 = rlp.val_at(3).map_err(err)?;
 		
 		let packet = AuthPacketEip8 {
 			signature: signature.into(),
@@ -104,10 +104,12 @@ pub(crate) struct AuthPacketEip8 {
 }
 
 impl AuthPacket {
-	pub fn new(secret: &Secret, public: Public, remote_public: &Public, nonce: H256, ecdhe: &KeyPair) -> Result<Self, AuthError> {
+	pub fn new(secret: &Secret, public: Public, remote_public: &Public, nonce: H256, ecdhe: &KeyPair) -> io::Result<Self> {
 		// E(remote-pubk, S(ecdhe-random, ecdh-shared-secret^nonce) || H(ecdhe-random-pubk) || pubk || nonce || 0x0)
-		let ecdh_shared_secret = ecdh::agree(secret, remote_public).map_err(|_| AuthError)?;
-		let signature = ethkey::sign(ecdhe.secret(), &(*ecdh_shared_secret ^ nonce)).map_err(|_| AuthError)?;
+		let ecdh_shared_secret = ecdh::agree(secret, remote_public)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacket::new failed"))?;
+		let signature = ethkey::sign(ecdhe.secret(), &(*ecdh_shared_secret ^ nonce))
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacket::new failed"))?;
 		let ecdh_public_hash = keccak(ecdhe.public());
 
 		let packet = AuthPacket {
@@ -120,14 +122,15 @@ impl AuthPacket {
 		Ok(packet)
 	}
 
-	pub fn encrypt(&self, remote_public: &Public) -> Result<RawAuthPacket, AuthError> {
+	pub fn encrypt(&self, remote_public: &Public) -> io::Result<RawAuthPacket> {
 		let mut data = [0u8; V4_AUTH_PACKET_SIZE - ECIES_OVERHEAD];
 		data[0..65].copy_from_slice(&*self.signature);
 		data[65..97].copy_from_slice(&self.ecdh_public_hash);
 		data[97..161].copy_from_slice(&self.public);
 		data[161..193].copy_from_slice(&self.nonce);
 		// last byte is 0
-		let message = ecies::encrypt(remote_public, &[], &data).map_err(|_| AuthError)?;
+		let message = ecies::encrypt(remote_public, &[], &data)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacket::encrypt failed"))?;
 		assert_eq!(message.len(), V4_AUTH_PACKET_SIZE);
 
 		let mut result = RawAuthPacket::default();
@@ -136,16 +139,20 @@ impl AuthPacket {
 	}
 
 	/// Used to retrive remote ephemeral
-	pub fn ephemeral(&self, secret: &Secret) -> Result<Public, AuthError> {
-		let shared = *ecdh::agree(secret, &self.public).map_err(|_| AuthError)?;
-		recover(&self.signature, &(shared ^ self.nonce)).map_err(|_| AuthError)
+	pub fn ephemeral(&self, secret: &Secret) -> io::Result<Public> {
+		let shared = *ecdh::agree(secret, &self.public)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacket::ephemeral failed"))?;
+		recover(&self.signature, &(shared ^ self.nonce))
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacket::ephemeral failed"))
 	}
 }
 
 impl AuthPacketEip8 {
-	pub fn ephemeral(&self, secret: &Secret) -> Result<Public, AuthError> {
-		let shared = *ecdh::agree(secret, &self.public).map_err(|_| AuthError)?;
-		recover(&self.signature, &(shared ^ self.nonce)).map_err(|_| AuthError)
+	pub fn ephemeral(&self, secret: &Secret) -> io::Result<Public> {
+		let shared = *ecdh::agree(secret, &self.public)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacketEip8::ephemeral failed"))?;
+		recover(&self.signature, &(shared ^ self.nonce))
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AuthPacketEip8::ephemeral failed"))
 	}
 }
 
@@ -170,6 +177,54 @@ impl AsMut<[u8]> for RawAckPacket {
 	}
 }
 
+impl RawAckPacket {
+	pub fn decrypt(&self, secret: &Secret) -> io::Result<AckPacket> {
+		let data = ecies::decrypt(secret, &[], &self.0)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt failed"))?;
+
+		let mut ephemeral = H512::default();
+		let mut nonce = H256::default();
+		ephemeral.copy_from_slice(&data[0..64]);
+		nonce.copy_from_slice(&data[64..96]);
+
+		let ack_packet = AckPacket {
+			ephemeral: ephemeral.into(),
+			nonce,
+		};
+
+		Ok(ack_packet)
+	}
+
+	pub fn decrypt_eip8_ack_packet_tail_size(&self) -> io::Result<usize> {
+		let total = ((u16::from(self.0[0]) << 8 | (u16::from(self.0[1]))) as usize) + 2;
+		if total < V4_ACK_PACKET_SIZE {
+			return Err(io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt_eip8_ack_packet_tail_size failed"));
+		}
+		Ok(total - self.0.len())
+	}
+
+	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<AckPacketEip8> {
+		let mut data = vec![0u8; V4_ACK_PACKET_SIZE - 2 + tail.len()];
+		data[0..V4_ACK_PACKET_SIZE - 2].copy_from_slice(&self.0[2..]);
+		data[V4_ACK_PACKET_SIZE - 2..].copy_from_slice(tail);
+		let ack = ecies::decrypt(secret, &self.0[0..2], &data)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt_eip8 failed"))?;
+		let err = |_| io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt_eip8 failed");
+		let rlp = Rlp::new(&ack);
+		let ephemeral: Public = rlp.val_at(0).map_err(err)?;
+		let nonce: H256 = rlp.val_at(1).map_err(err)?;
+		let version: u64 = rlp.val_at(2).map_err(err)?;
+
+		let ack_packet = AckPacketEip8 {
+			ephemeral,
+			nonce,
+			version
+		};
+
+		Ok(ack_packet)
+	}
+}
+
 #[derive(Debug)]
 pub(crate) struct AckPacket {
 	pub ephemeral: Public,
@@ -184,12 +239,13 @@ pub(crate) struct AckPacketEip8 {
 }
 
 impl AckPacket {
-	pub fn encrypt(&self, remote_public: &Public) -> Result<RawAckPacket, AuthError> {
+	pub fn encrypt(&self, remote_public: &Public) -> io::Result<RawAckPacket> {
 		let mut data = [0u8; V4_ACK_PACKET_SIZE - ECIES_OVERHEAD];
 		data[0..64].copy_from_slice(&self.ephemeral);
 		data[64..96].copy_from_slice(&self.nonce);
 		// last bytes is 0
-		let message = ecies::encrypt(remote_public, &[], &data).map_err(|_| AuthError)?;
+		let message = ecies::encrypt(remote_public, &[], &data)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AckPacket::encrypt failed"))?;
 		assert_eq!(message.len(), V4_ACK_PACKET_SIZE);
 
 		let mut result = RawAckPacket::default();
@@ -199,7 +255,7 @@ impl AckPacket {
 }
 
 impl AckPacketEip8 {
-	pub fn encrypt_eip8(&self, remote_public: &Public) -> Result<Vec<u8>, AuthError> {
+	pub fn encrypt_eip8(&self, remote_public: &Public) -> io::Result<Vec<u8>> {
 		let mut rlp_stream = RlpStream::new_list(3);
 		rlp_stream.append(&self.ephemeral);
 		rlp_stream.append(&self.nonce);
@@ -212,7 +268,8 @@ impl AckPacketEip8 {
 		let encoded = rlp_stream.drain();
 		let len = (encoded.len() + ECIES_OVERHEAD) as u16;
 		let prefix = [ (len >> 8) as u8, (len & 0xff) as u8 ];
-		let message = ecies::encrypt(remote_public, &prefix, &encoded).map_err(|_| AuthError)?;
+		let message = ecies::encrypt(remote_public, &prefix, &encoded)
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "AckPacketEip8::encrypt failed"))?;
 
 		let mut result = Vec::with_capacity(prefix.len() + message.len());
 		result.extend_from_slice(&prefix);
@@ -277,7 +334,10 @@ mod tests {
 		let mut raw_packet = RawAuthPacket::default();
 		raw_packet.as_mut().copy_from_slice(&auth[..V4_AUTH_PACKET_SIZE]);
 
-		assert_eq!(AuthError, raw_packet.decrypt(&secret).unwrap_err());
+		let err = raw_packet.decrypt(&secret).unwrap_err();
+		assert_eq!(io::ErrorKind::Other, err.kind());
+		assert_eq!("RawAuthPacket::decrypt failed", err.to_string());
+
 		assert_eq!(auth.len() - V4_AUTH_PACKET_SIZE, raw_packet.decrypt_eip8_auth_packet_tail_size().unwrap());
 
 		let packet = raw_packet.decrypt_eip8(&secret, &auth[V4_AUTH_PACKET_SIZE..]).unwrap();

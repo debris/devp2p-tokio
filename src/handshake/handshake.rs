@@ -16,14 +16,24 @@ pub struct Handshake<A> {
 
 impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 	/// Initiate connection to the remote node.
-	pub fn init(io: A) -> Self {
+	pub fn init(io: A, host: KeyPair, nonce: H256, remote_public: &Public) -> io::Result<Self> {
+		let ecdhe = ethkey::Random.generate()
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "Handshake::init failed"))?;
+
+		let auth_packet = AuthPacket::new(host.secret(), *host.public(), remote_public, nonce, &ecdhe)?;
+
 		let init = InitHandshake {
-			// TODO: create auth packet
-			state: InitHandshakeState::WriteAuth(write_all(io, RawAuthPacket::default())),
+			state: InitHandshakeState::WriteAuth(write_all(io, auth_packet.encrypt(remote_public)?)),
+			secret: host.secret().clone(),
+			ecdhe,
+			nonce,
 		};
-		Handshake {
+
+		let handshake = Handshake {
 			inner: Either::A(init),
-		}
+		};
+		
+		Ok(handshake)
 	}
 
 	/// Accept connection from a remote node.
@@ -32,7 +42,8 @@ impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 			state: AcceptHandshakeState::ReadAuth(read_exact(io, RawAuthPacket::default())),
 			secret,
 			// TODO: propagate error
-			ecdhe: ethkey::Random.generate().unwrap(),
+			ecdhe: ethkey::Random.generate()
+				.map_err(|_| io::Error::new(io::ErrorKind::Other, "Handshake::accept failed"))?,
 			nonce,
 		};
 
@@ -65,12 +76,29 @@ pub struct HandshakeData {
 }
 
 enum InitHandshakeState<A> {
+	/// Write auth packet.
 	WriteAuth(WriteAll<A, RawAuthPacket>),
+	/// Read ack packet.
 	ReadAck(ReadExact<A, RawAckPacket>),
+	/// According to eip8 ack packet may have a variadic size,
+	/// so the reading in split into 2 parts.
+	ReadAckEip8 {
+		/// Ack packet head should always be `Some`. It's wrapped `Option`
+		/// we can `take()` it after tail is fetched.
+		ack_packet_head: Option<RawAckPacket>,
+		ack_packet_tail: ReadExact<A, Vec<u8>>,
+	}
 }
 
 struct InitHandshake<A>  {
+	/// State of init handshake.
 	state: InitHandshakeState<A>,
+	/// Our secret.
+	secret: Secret,
+	/// Our ecdh keypair.
+	ecdhe: KeyPair,
+	/// Nonce
+	nonce: H256,
 }
 
 impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
@@ -85,7 +113,40 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 					InitHandshakeState::ReadAck(read_exact(io, RawAckPacket::default()))
 				},
 				InitHandshakeState::ReadAck(ref mut future) => {
-					unimplemented!();
+					let (io, raw_ack_packet) = try_ready!(future.poll());
+					match raw_ack_packet.decrypt(&self.secret) {
+						Ok(ack_packet) => {
+							let result = HandshakeData {
+								remote_ephemeral: ack_packet.ephemeral,
+								remote_nonce: ack_packet.nonce,
+								remote_version: PROTOCOL_VERSION,
+							};
+
+							return Ok(result.into())
+						},
+						Err(_) => {
+							let ack_packet_tail_size = raw_ack_packet.decrypt_eip8_ack_packet_tail_size()?;
+							InitHandshakeState::ReadAckEip8 { 
+								ack_packet_head: Some(raw_ack_packet),
+								ack_packet_tail: read_exact(io, vec![0u8; ack_packet_tail_size]),
+							}
+						},
+					}
+				},
+				InitHandshakeState::ReadAckEip8 { ref mut ack_packet_head, ref mut ack_packet_tail } => {
+					let (io, tail) = try_ready!(ack_packet_tail.poll());
+					let ack_packet_eip8 = ack_packet_head
+						.take()
+						.expect("ack_packet_head is always Some; qed")
+						.decrypt_eip8(&self.secret, &tail)?;
+
+					let result = HandshakeData {
+						remote_ephemeral: ack_packet_eip8.ephemeral,
+						remote_nonce: ack_packet_eip8.nonce,
+						remote_version: ack_packet_eip8.version,
+					};
+
+					return Ok(result.into());
 				},
 			};
 
@@ -95,7 +156,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 }
 
 enum AcceptHandshakeState<A> {
-	/// Read auth packet
+	/// Read auth packet.
 	ReadAuth(ReadExact<A, RawAuthPacket>),
 	/// According to eip8 auth packet may have a variadic size,
 	/// so the reading is split into 2 parts.
@@ -120,7 +181,7 @@ enum AcceptHandshakeState<A> {
 struct AcceptHandshake<A>  {
 	/// State of accept handshake.
 	state: AcceptHandshakeState<A>,
-	/// Our secret. Used to decrypt auth packets.
+	/// Our secret.
 	secret: Secret,
 	/// Our ecdh keypair.
 	ecdhe: KeyPair,
@@ -144,12 +205,10 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 								nonce: self.nonce
 							};
 
-							// TODO: propagete error upstream
-							let raw_packet = ack_packet.encrypt(&auth_packet.public).unwrap();
+							let raw_packet = ack_packet.encrypt(&auth_packet.public)?;
 
 							let result = HandshakeData {
-							// TODO: propagete error upstream
-								remote_ephemeral: auth_packet.ephemeral(&self.secret).unwrap(),
+								remote_ephemeral: auth_packet.ephemeral(&self.secret)?,
 								remote_nonce: auth_packet.nonce,
 								remote_version: PROTOCOL_VERSION,
 							};
@@ -160,22 +219,20 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 							}
 						},
 						Err(_) => {
-							// TODO: propagate error upstream
-							let auth_packet_tail_size = raw_auth_packet.decrypt_eip8_auth_packet_tail_size().unwrap();
+							let auth_packet_tail_size = raw_auth_packet.decrypt_eip8_auth_packet_tail_size()?;
 							AcceptHandshakeState::ReadAuthEip8 {
 								auth_packet_head: Some(raw_auth_packet),
 								auth_packet_tail: read_exact(io, vec![0u8; auth_packet_tail_size]),
 							}
-						}
+						},
 					}
 				},
 				AcceptHandshakeState::ReadAuthEip8 { ref mut auth_packet_head, ref mut auth_packet_tail } => {
 					let (io, tail) = try_ready!(auth_packet_tail.poll());
-					// TODO: propagate error upstream
 					let auth_packet_eip8 = auth_packet_head
 						.take()
 						.expect("auth_packet_head is always Some; qed")
-						.decrypt_eip8(&self.secret, &tail).unwrap();
+						.decrypt_eip8(&self.secret, &tail)?;
 					
 					let ack_packet_eip8 = AckPacketEip8 {
 						ephemeral: *self.ecdhe.public(),
@@ -183,12 +240,10 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 						version: PROTOCOL_VERSION,
 					};
 
-					// TODO: propagate error upstream
-					let raw_packet = ack_packet_eip8.encrypt_eip8(&auth_packet_eip8.public).unwrap();
+					let raw_packet = ack_packet_eip8.encrypt_eip8(&auth_packet_eip8.public)?;
 
 					let result = HandshakeData {
-					// TODO: propagete error upstream
-						remote_ephemeral: auth_packet_eip8.ephemeral(&self.secret).unwrap(),
+						remote_ephemeral: auth_packet_eip8.ephemeral(&self.secret)?,
 						remote_nonce: auth_packet_eip8.nonce,
 						remote_version: auth_packet_eip8.version,
 					};
@@ -199,12 +254,12 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 					}
 				},
 				AcceptHandshakeState::WriteAck { ref mut result, ref mut write_ack } => {
-					let (io, _message) = try_ready!(write_ack.poll());
-					unimplemented!();
+					let (_, _message) = try_ready!(write_ack.poll());
+					return Ok(result.take().expect("result is always Some; qed").into())
 				},
 				AcceptHandshakeState::WriteAckEip8 { ref mut result, ref mut write_ack } => {
-					let (io, _message) = try_ready!(write_ack.poll());
-					unimplemented!();
+					let (_, _message) = try_ready!(write_ack.poll());
+					return Ok(result.take().expect("result is always Some; qed").into())
 				},
 			};
 
