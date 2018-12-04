@@ -63,11 +63,11 @@ impl RawAuthPacket {
 		Ok(total - self.0.len())
 	}
 
-	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<AuthPacketEip8> {
-		let mut data = vec![0u8; V4_AUTH_PACKET_SIZE - 2 + tail.len()];
-		data[0..V4_AUTH_PACKET_SIZE - 2].copy_from_slice(&self.0[2..]);
-		data[V4_AUTH_PACKET_SIZE - 2..].copy_from_slice(tail);
-		let auth = ecies::decrypt(secret, &self.0[0..2], &data)
+	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<(AuthPacketEip8, Vec<u8>)> {
+		let mut data = vec![0u8; V4_AUTH_PACKET_SIZE + tail.len()];
+		data[0..V4_AUTH_PACKET_SIZE].copy_from_slice(&self.0);
+		data[V4_AUTH_PACKET_SIZE..].copy_from_slice(tail);
+		let auth = ecies::decrypt(secret, &self.0[0..2], &data[2..])
 			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt_eip8 failed"))?;
 		let err = |_| io::Error::new(io::ErrorKind::Other, "RawAuthPacket::decrypt_eip8 failed");
 		let rlp = Rlp::new(&auth);
@@ -83,7 +83,7 @@ impl RawAuthPacket {
 			version
 		};
 
-		Ok(packet)
+		Ok((packet, data))
 	}
 }
 
@@ -203,11 +203,11 @@ impl RawAckPacket {
 		Ok(total - self.0.len())
 	}
 
-	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<AckPacketEip8> {
-		let mut data = vec![0u8; V4_ACK_PACKET_SIZE - 2 + tail.len()];
-		data[0..V4_ACK_PACKET_SIZE - 2].copy_from_slice(&self.0[2..]);
-		data[V4_ACK_PACKET_SIZE - 2..].copy_from_slice(tail);
-		let ack = ecies::decrypt(secret, &self.0[0..2], &data)
+	pub fn decrypt_eip8(&self, secret: &Secret, tail: &[u8]) -> io::Result<(AckPacketEip8, Vec<u8>)> {
+		let mut data = vec![0u8; V4_ACK_PACKET_SIZE + tail.len()];
+		data[0..V4_ACK_PACKET_SIZE].copy_from_slice(&self.0);
+		data[V4_ACK_PACKET_SIZE..].copy_from_slice(tail);
+		let ack = ecies::decrypt(secret, &self.0[0..2], &data[2..])
 			.map_err(|_| io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt_eip8 failed"))?;
 		let err = |_| io::Error::new(io::ErrorKind::Other, "RawAckPacket::decrypt_eip8 failed");
 		let rlp = Rlp::new(&ack);
@@ -221,7 +221,7 @@ impl RawAckPacket {
 			version
 		};
 
-		Ok(ack_packet)
+		Ok((ack_packet, data))
 	}
 }
 

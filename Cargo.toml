@@ -4,12 +4,16 @@ version = "0.1.0"
 authors = ["debris <marek.kotewicz@gmail.com>"]
 
 [dependencies]
+bytes = "0.4.10"
 ethereum-types = "0.4"
 ethkey = { path = "../parity/ethkey" }
 futures = "0.1.25"
 keccak-hash = "0.1"
-rlp = { version = "0.3.0", features = ["ethereum"] }
 rand = "0.4"
+rlp = { version = "0.3.0", features = ["ethereum"] }
+rust-crypto = "0.2.34"
 rustc-hex = "1.0"
+tiny-keccak = "1.4"
+tokio-codec = "0.1.1"
 tokio-io = "0.1.10"
 tokio-tcp = "0.1.2"
