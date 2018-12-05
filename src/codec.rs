@@ -7,12 +7,13 @@ use rcrypto::aessafe::AesSafe256Encryptor;
 use rcrypto::blockmodes::{CtrMode, NoPadding, EcbEncryptor, EncPadding};
 use rcrypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use rcrypto::symmetriccipher::{Encryptor, Decryptor};
-use rlp::Rlp;
+use rlp::{Rlp, RlpStream};
 use tiny_keccak::Keccak;
 use tokio_codec::{Encoder, Decoder};
 use handshake::HandshakeData;
 
 const ENCRYPTED_HEADER_LEN: usize = 32;
+const MAX_PAYLOAD_SIZE: usize = (1 << 24) - 1;
 
 /// `RLPx` packet.
 pub struct Packet {
@@ -139,11 +140,56 @@ impl Codec {
 }
 
 impl Encoder for Codec {
-	type Item = ();
+	type Item = Packet;
 	type Error = io::Error;
 
 	fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-		unimplemented!();
+		let len = item.data.len();
+		if len > MAX_PAYLOAD_SIZE {
+			return Err(io::Error::new(io::ErrorKind::Other, "Encoder::encode failed"));
+		}
+
+		let mut header = RlpStream::new();
+		// first we append payload_len
+		header.append_raw(&[(len >> 16) as u8, (len >> 8) as u8, len as u8], 1);
+		// then we append a list of two items
+		// the first one is protocol_id set to 0 (mk, not sure why)
+		// the second one is set to zero (mk, not sure what it is at all)
+		header.append_raw(&[0xc2u8, 0x80u8, 0x80u8], 1);
+
+		let mut header = header.out();
+		let padding = (16 - (len % 16)) % 16;
+		header.resize(16, 0u8);
+
+		let mut packet = vec![0u8; 32 + len + padding + 16];
+		self.encoder.encrypt(
+			&mut RefReadBuffer::new(&header), 
+			&mut RefWriteBuffer::new(&mut packet), 
+			false
+		).expect("buffers have the right size; qed");
+
+		update_mac(&mut self.egress_mac, &mut self.mac_encoder, H128::from_slice(&packet[0..16]));
+		self.egress_mac.clone().finalize(&mut packet[16..32]);
+		self.encoder.encrypt(
+			&mut RefReadBuffer::new(&item.data),
+			&mut RefWriteBuffer::new(&mut packet[32..32 + len]),
+			padding == 0
+		).expect("buffers have the right size; qed");
+
+		if padding != 0 {
+			let pad = [0u8; 16];
+			self.encoder.encrypt(
+				&mut RefReadBuffer::new(&pad[0..padding]),
+				&mut RefWriteBuffer::new(&mut packet[(32 + len)..(32 + len + padding)]),
+				true
+			).expect("buffers have the right size; qed");
+		}
+
+		self.egress_mac.update(&packet[32..(32 + len + padding)]);
+		update_mac_with_empty_seed(&mut self.egress_mac, &mut self.mac_encoder);
+		self.egress_mac.clone().finalize(&mut packet[(32 + len + padding)..]);
+		dst.extend_from_slice(&packet);
+		Ok(())
 	}
 }
 

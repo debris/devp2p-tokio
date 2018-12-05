@@ -16,5 +16,6 @@ extern crate tokio_tcp;
 mod codec;
 mod handshake;
 
+pub use codec::{Codec, Packet};
 pub use self::handshake::{Handshake, HandshakeData};
 

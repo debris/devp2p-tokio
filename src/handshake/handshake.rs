@@ -5,7 +5,7 @@ use futures::{Future, Poll};
 use futures::future::Either;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::io::{read_exact, ReadExact, write_all, WriteAll};
-use super::packet::{RawAckPacket, RawAuthPacket, AuthPacket, AckPacket, AuthPacketEip8, AckPacketEip8};
+use super::packet::{RawAckPacket, RawAuthPacket, AuthPacket, AckPacket, AckPacketEip8};
 
 const PROTOCOL_VERSION: u64 = 4;
 
