@@ -168,7 +168,7 @@ impl Encoder for Codec {
 			false
 		).expect("buffers have the right size; qed");
 
-		update_mac(&mut self.egress_mac, &mut self.mac_encoder, H128::from_slice(&packet[0..16]));
+		update_mac(&mut self.egress_mac, &mut self.mac_encoder, H128::from(&packet[0..16]));
 		self.egress_mac.clone().finalize(&mut packet[16..32]);
 		self.encoder.encrypt(
 			&mut RefReadBuffer::new(&item.data),
@@ -206,7 +206,7 @@ impl Decoder for Codec {
 				}
 
 				let raw_header = src.split_to(ENCRYPTED_HEADER_LEN);
-				update_mac(&mut self.ingress_mac, &mut self.mac_encoder, H128::from_slice(&raw_header[0..16]));
+				update_mac(&mut self.ingress_mac, &mut self.mac_encoder, H128::from(&raw_header[0..16]));
 				let mac = &raw_header[16..];
 
 				let mut expected = H256::default();

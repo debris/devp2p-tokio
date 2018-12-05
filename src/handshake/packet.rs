@@ -340,7 +340,7 @@ mod tests {
 
 		assert_eq!(auth.len() - V4_AUTH_PACKET_SIZE, raw_packet.decrypt_eip8_auth_packet_tail_size().unwrap());
 
-		let packet = raw_packet.decrypt_eip8(&secret, &auth[V4_AUTH_PACKET_SIZE..]).unwrap();
+		let packet = raw_packet.decrypt_eip8(&secret, &auth[V4_AUTH_PACKET_SIZE..]).unwrap().0;
 		assert_eq!("299ca6acfd35e3d72d8ba3d1e2b60b5561d5af5218eb5bc182045769eb422691".from_hex().unwrap(), packet.signature.r());
 		assert_eq!("0a301acae3b369fffc4a4899d6b02531e89fd4fe36a2cf0d93607ba470b50f78".from_hex().unwrap(), packet.signature.s());
 		assert_eq!(0, packet.signature.v());

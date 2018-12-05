@@ -159,7 +159,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 					}
 				},
 				InitHandshakeState::ReadAckEip8 { ref mut auth_packet, ref mut ack_packet_head, ref mut ack_packet_tail } => {
-					let (io, tail) = try_ready!(ack_packet_tail.poll());
+					let (_io, tail) = try_ready!(ack_packet_tail.poll());
 					let (ack_packet_eip8, ack_cipher) = ack_packet_head
 						.take()
 						.expect("ack_packet_head is always Some; qed")
@@ -305,5 +305,101 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 
 			self.state = next_state;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::io::{Read, Write};
+	use futures::sync::mpsc;
+	use futures::{Sink, Stream, Async};
+	use super::*;
+
+	struct TestSocket {
+		sender: mpsc::Sender<Vec<u8>>,
+		receiver: mpsc::Receiver<Vec<u8>>,
+		read_buffer: Vec<u8>,
+	}
+
+	impl Read for TestSocket {
+		fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+			let poll = self.receiver.poll();
+			match poll {
+				Ok(Async::Ready(Some(bytes))) => {
+					self.read_buffer.extend(bytes);
+				},
+				Ok(Async::NotReady) => return Err(io::ErrorKind::WouldBlock.into()),
+				Ok(Async::Ready(None)) => (),
+				Err(_) => (),
+			}
+
+			let len = (&self.read_buffer as &[u8]).read(buf)?;
+			self.read_buffer.split_off(len);
+			Ok(len)
+		}
+	}
+
+	impl AsyncRead for TestSocket {}
+
+	impl Write for TestSocket {
+		fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+			self.sender.try_send(buf.to_vec()).unwrap();
+			Ok(buf.len())
+		}
+
+		fn flush(&mut self) -> io::Result<()> {
+			self.sender.poll_complete().unwrap();
+			Ok(())
+		}
+	}
+
+	impl AsyncWrite for TestSocket {
+		fn shutdown(&mut self) -> Poll<(), io::Error> {
+			self.receiver.close();
+			self.sender.close().unwrap();
+			Ok(().into())
+		}
+	}
+
+	fn test_sockets() -> (TestSocket, TestSocket) {
+		let (sender_a, receiver_a) = mpsc::channel(5);
+		let (sender_b, receiver_b) = mpsc::channel(5);
+		(TestSocket {
+			sender: sender_a,
+			receiver: receiver_b,
+			read_buffer: Vec::default(),
+		},
+		TestSocket {
+			sender: sender_b,
+			receiver: receiver_a,
+			read_buffer: Vec::default(),
+		})
+	}
+
+	#[test]
+	fn test_handshake_between_two_nodes() {
+		let a_host = ethkey::Random.generate().unwrap();
+		let a_nonce = 1.into();
+		let b_host = ethkey::Random.generate().unwrap();
+		let b_nonce = 2.into();
+		let (a_socket, b_socket) = test_sockets();
+
+		let handshake_a = Handshake::init(a_socket, a_host, a_nonce, b_host.public()).unwrap();
+		let handshake_b = Handshake::accept(b_socket, b_host.secret().clone(), b_nonce).unwrap();
+
+		let (result_b, future_a) = handshake_a.select(handshake_b).wait().ok().unwrap();
+		let result_a = future_a.wait().unwrap();
+
+		assert_eq!(result_a.originated, true);
+		assert_eq!(result_a.nonce, 1.into());
+		assert_eq!(result_a.remote_nonce, 2.into());
+		assert_eq!(result_a.remote_version, PROTOCOL_VERSION);
+		assert_eq!(result_a.ecdhe.public(), &result_b.remote_ephemeral);
+
+		assert_eq!(result_b.originated, false);
+		assert_eq!(result_b.nonce, 2.into());
+		assert_eq!(result_b.remote_nonce, 1.into());
+		assert_eq!(result_b.remote_version, PROTOCOL_VERSION);
+		assert_eq!(result_b.ecdhe.public(), &result_a.remote_ephemeral);
 	}
 }
