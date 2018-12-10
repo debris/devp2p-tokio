@@ -16,6 +16,7 @@ const ENCRYPTED_HEADER_LEN: usize = 32;
 const MAX_PAYLOAD_SIZE: usize = (1 << 24) - 1;
 
 /// `RLPx` packet.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Packet {
 	pub protocol: u16,
 	pub data: Vec<u8>,
@@ -276,5 +277,29 @@ impl Decoder for Codec {
 		self.decode_state = DecodeState::Header;
 
 		Ok(Some(packet))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use mock::mock_handshake_data;
+	use super::*;
+	
+	#[test]
+	fn test_codec() {
+		let (data_a, data_b) = mock_handshake_data();
+		let mut codec_a = Codec::new(data_a).unwrap();
+		let mut codec_b = Codec::new(data_b).unwrap();
+
+		let packet = Packet {
+			// TODO: as of now, encoder ignores protocol version
+			protocol: 0,
+			data: vec![1, 2, 3],
+		};
+
+		let mut encoded = BytesMut::default();
+		codec_a.encode(packet.clone(), &mut encoded).unwrap();
+		let decoded_packet = codec_b.decode(&mut encoded).unwrap().unwrap();
+		assert_eq!(packet, decoded_packet);
 	}
 }

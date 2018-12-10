@@ -37,10 +37,10 @@ impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 	}
 
 	/// Accept connection from a remote node.
-	pub fn accept(io: A, secret: Secret, nonce: H256) -> io::Result<Self> {
+	pub fn accept(io: A, host: KeyPair, nonce: H256) -> io::Result<Self> {
 		let accept = AcceptHandshake {
 			state: AcceptHandshakeState::ReadAuth(read_exact(io, RawAuthPacket::default())),
-			secret,
+			secret: host.secret().clone(),
 			ecdhe: ethkey::Random.generate()
 				.map_err(|_| io::Error::new(io::ErrorKind::Other, "Handshake::accept failed"))?,
 			nonce,
@@ -310,71 +310,8 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 
 #[cfg(test)]
 mod tests {
-	use std::io::{Read, Write};
-	use futures::sync::mpsc;
-	use futures::{Sink, Stream, Async};
+	use mock::mock_sockets;
 	use super::*;
-
-	struct TestSocket {
-		sender: mpsc::Sender<Vec<u8>>,
-		receiver: mpsc::Receiver<Vec<u8>>,
-		read_buffer: Vec<u8>,
-	}
-
-	impl Read for TestSocket {
-		fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-			let poll = self.receiver.poll();
-			match poll {
-				Ok(Async::Ready(Some(bytes))) => {
-					self.read_buffer.extend(bytes);
-				},
-				Ok(Async::NotReady) => return Err(io::ErrorKind::WouldBlock.into()),
-				Ok(Async::Ready(None)) => (),
-				Err(_) => (),
-			}
-
-			let len = (&self.read_buffer as &[u8]).read(buf)?;
-			self.read_buffer.split_off(len);
-			Ok(len)
-		}
-	}
-
-	impl AsyncRead for TestSocket {}
-
-	impl Write for TestSocket {
-		fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-			self.sender.try_send(buf.to_vec()).unwrap();
-			Ok(buf.len())
-		}
-
-		fn flush(&mut self) -> io::Result<()> {
-			self.sender.poll_complete().unwrap();
-			Ok(())
-		}
-	}
-
-	impl AsyncWrite for TestSocket {
-		fn shutdown(&mut self) -> Poll<(), io::Error> {
-			self.receiver.close();
-			self.sender.close().unwrap();
-			Ok(().into())
-		}
-	}
-
-	fn test_sockets() -> (TestSocket, TestSocket) {
-		let (sender_a, receiver_a) = mpsc::channel(5);
-		let (sender_b, receiver_b) = mpsc::channel(5);
-		(TestSocket {
-			sender: sender_a,
-			receiver: receiver_b,
-			read_buffer: Vec::default(),
-		},
-		TestSocket {
-			sender: sender_b,
-			receiver: receiver_a,
-			read_buffer: Vec::default(),
-		})
-	}
 
 	#[test]
 	fn test_handshake_between_two_nodes() {
@@ -382,10 +319,10 @@ mod tests {
 		let a_nonce = 1.into();
 		let b_host = ethkey::Random.generate().unwrap();
 		let b_nonce = 2.into();
-		let (a_socket, b_socket) = test_sockets();
+		let (a_socket, b_socket) = mock_sockets();
 
 		let handshake_a = Handshake::init(a_socket, a_host, a_nonce, b_host.public()).unwrap();
-		let handshake_b = Handshake::accept(b_socket, b_host.secret().clone(), b_nonce).unwrap();
+		let handshake_b = Handshake::accept(b_socket, b_host, b_nonce).unwrap();
 
 		let (result_b, future_a) = handshake_a.select(handshake_b).wait().ok().unwrap();
 		let result_a = future_a.wait().unwrap();
