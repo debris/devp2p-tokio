@@ -56,6 +56,8 @@ fn update_mac_with_empty_seed(mac: &mut Keccak, mac_encoder: &mut EcbEncryptor<A
 	mac.update(&enc);
 }
 
+/// `RLPx` codec.
+/// https://github.com/ethereum/devp2p/blob/master/rlpx.md#framing
 pub struct Codec {
 	/// Decoder state.
 	decode_state: DecodeState,
@@ -294,12 +296,14 @@ mod tests {
 		let packet = Packet {
 			// TODO: as of now, encoder ignores protocol version
 			protocol: 0,
-			data: vec![1, 2, 3],
+			// this is ping packet data
+			data: vec![2, 192],
 		};
 
 		let mut encoded = BytesMut::default();
 		codec_a.encode(packet.clone(), &mut encoded).unwrap();
 		let decoded_packet = codec_b.decode(&mut encoded).unwrap().unwrap();
 		assert_eq!(packet, decoded_packet);
+		assert_eq!(encoded.len(), 0);
 	}
 }

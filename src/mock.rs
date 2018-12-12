@@ -4,6 +4,7 @@ use futures::sync::mpsc;
 use futures::{Sink, Stream, Async, Poll, Future};
 use tokio_io::{AsyncRead, AsyncWrite};
 use handshake::{HandshakeData, Handshake};
+use session::Session;
 
 pub struct MockSocket {
 	sender: mpsc::Sender<Vec<u8>>,
@@ -24,7 +25,7 @@ impl Read for MockSocket {
 		}
 
 		let len = (&self.read_buffer as &[u8]).read(buf)?;
-		self.read_buffer.split_off(len);
+		self.read_buffer = self.read_buffer.split_off(len);
 		Ok(len)
 	}
 }
@@ -77,6 +78,25 @@ pub fn mock_handshake_data() -> (HandshakeData, HandshakeData) {
 	let handshake_b = Handshake::accept(b_socket, b_host, b_nonce).unwrap();
 
 	let (result_b, future_a) = handshake_a.select(handshake_b).wait().ok().unwrap();
+	let result_a = future_a.wait().unwrap();
+
+	let result_a = result_a.1;
+	let result_b = result_b.1;
+
+	(result_a, result_b)
+}
+
+pub fn mock_sessions() -> (Session<MockSocket>, Session<MockSocket>) {
+	let a_host = ethkey::Random.generate().unwrap();
+	let a_nonce = 1.into();
+	let b_host = ethkey::Random.generate().unwrap();
+	let b_nonce = 2.into();
+	let (a_socket, b_socket) = mock_sockets();
+
+	let session_a = Session::init(a_socket, a_host, a_nonce, b_host.public()).unwrap();
+	let session_b = Session::accept(b_socket, b_host, b_nonce).unwrap();
+
+	let (result_b, future_a) = session_a.select(session_b).wait().ok().unwrap();
 	let result_a = future_a.wait().unwrap();
 
 	(result_a, result_b)

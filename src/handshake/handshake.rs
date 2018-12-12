@@ -55,7 +55,7 @@ impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 }
 
 impl<A> Future for Handshake<A> where A: AsyncRead + AsyncWrite {
-	type Item = HandshakeData;
+	type Item = (A, HandshakeData);
 	type Error = io::Error;
 
 	fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -118,7 +118,7 @@ struct InitHandshake<A>  {
 }
 
 impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
-	type Item = HandshakeData;
+	type Item = (A, HandshakeData);
 	type Error = io::Error;
 	
 	fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -146,7 +146,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 								remote_version: PROTOCOL_VERSION,
 							};
 
-							return Ok(result.into())
+							return Ok((io, result).into())
 						},
 						Err(_) => {
 							let ack_packet_tail_size = raw_ack_packet.decrypt_eip8_ack_packet_tail_size()?;
@@ -159,7 +159,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 					}
 				},
 				InitHandshakeState::ReadAckEip8 { ref mut auth_packet, ref mut ack_packet_head, ref mut ack_packet_tail } => {
-					let (_io, tail) = try_ready!(ack_packet_tail.poll());
+					let (io, tail) = try_ready!(ack_packet_tail.poll());
 					let (ack_packet_eip8, ack_cipher) = ack_packet_head
 						.take()
 						.expect("ack_packet_head is always Some; qed")
@@ -176,7 +176,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 						remote_version: ack_packet_eip8.version,
 					};
 
-					return Ok(result.into());
+					return Ok((io, result).into());
 				},
 			};
 
@@ -220,7 +220,7 @@ struct AcceptHandshake<A>  {
 }
 
 impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
-	type Item = HandshakeData;
+	type Item = (A, HandshakeData);
 	type Error = io::Error;
 	
 	fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -294,12 +294,12 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 					}
 				},
 				AcceptHandshakeState::WriteAck { ref mut result, ref mut write_ack } => {
-					let (_, _message) = try_ready!(write_ack.poll());
-					return Ok(result.take().expect("result is always Some; qed").into())
+					let (io, _message) = try_ready!(write_ack.poll());
+					return Ok((io, result.take().expect("result is always Some; qed")).into())
 				},
 				AcceptHandshakeState::WriteAckEip8 { ref mut result, ref mut write_ack } => {
-					let (_, _message) = try_ready!(write_ack.poll());
-					return Ok(result.take().expect("result is always Some; qed").into())
+					let (io, _message) = try_ready!(write_ack.poll());
+					return Ok((io, result.take().expect("result is always Some; qed")).into())
 				},
 			};
 
@@ -326,6 +326,9 @@ mod tests {
 
 		let (result_b, future_a) = handshake_a.select(handshake_b).wait().ok().unwrap();
 		let result_a = future_a.wait().unwrap();
+
+		let result_a = result_a.1;
+		let result_b = result_b.1;
 
 		assert_eq!(result_a.originated, true);
 		assert_eq!(result_a.nonce, 1.into());
