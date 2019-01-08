@@ -34,7 +34,7 @@ impl Encoder for Codec {
 
 	fn encode(&mut self, data: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
 		let mut rlp = RlpStream::new();
-		rlp.append(&data.id());
+		rlp.append_raw(&[data.id()], 0);
 		rlp.append_raw(&data.body(), 1);
 		let packet = rlpx::Packet {
 			// TODO: protocol

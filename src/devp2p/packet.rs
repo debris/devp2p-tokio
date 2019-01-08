@@ -113,7 +113,7 @@ impl rlp::Encodable for DisconnectReason {
 	}
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UserMessage {
 	/// id should be in range `PACKET_USER` and `PACKET_LAST`
 	pub id: u8,

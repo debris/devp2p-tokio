@@ -1,4 +1,5 @@
 use std::io;
+use std::collections::VecDeque;
 use futures::{Future, Poll, Sink, AsyncSink, Async, Stream, stream};
 use futures::sink;
 use futures::sync::mpsc;
@@ -17,7 +18,7 @@ use Handshake;
 pub struct Session<A> {
 	sender: mpsc::Sender<devp2p::Packet>,
 	receiver: mpsc::Receiver<devp2p::Packet>,
-	packet_to_send: Option<devp2p::Packet>,
+	packets_to_send: VecDeque<devp2p::Packet>,
 	interface: Framed<A, devp2p::Codec>,
 }
 
@@ -49,7 +50,7 @@ impl<A> Stream for Session<A> where A: AsyncRead + AsyncWrite {
 
 	fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
 		loop {
-			let packet = match self.packet_to_send.take() {
+			let packet = match self.packets_to_send.pop_front() {
 				Some(packet) => packet,
 				None => match self.receiver.poll().expect("mpsc::Receiver::poll never returns Err; qed") {
 					Async::Ready(Some(item)) => item,
@@ -61,8 +62,7 @@ impl<A> Stream for Session<A> where A: AsyncRead + AsyncWrite {
 			};
 
 			if let AsyncSink::NotReady(packet) = self.interface.start_send(packet)? {
-				assert!(self.packet_to_send.is_none(), "self.packet_to_send.take() called before; qed");
-				self.packet_to_send = Some(packet);
+				self.packets_to_send.push_back(packet);
 				break;
 			}
 		}
@@ -81,11 +81,12 @@ impl<A> Stream for Session<A> where A: AsyncRead + AsyncWrite {
 				Err(io::Error::new(io::ErrorKind::Other, "Session::poll failed. Unexpected 'Hello' packet."))
 			},
 			devp2p::Packet::Disconnect(_) => {
-				unimplemented!();
+				Ok(Async::Ready(None))
 			},
 			devp2p::Packet::Ping => {
-				// TODO: send Pong
-				unimplemented!();
+				// TODO: put everything in a loop so this packet is sent before next call to `poll()`
+				self.packets_to_send.push_back(devp2p::Packet::Pong);
+				Ok(Async::NotReady)
 			},
 			devp2p::Packet::Pong => {
 				// TODO: update timers
@@ -128,18 +129,6 @@ impl SessionWrite {
 		SessionSend {
 			future: self.sender.send(packet)
 		}
-	}
-	
-	pub fn send_ping(self) -> SessionSend {
-		self.send(devp2p::Packet::Ping)
-	}
-
-	pub fn send_pong(self) -> SessionSend {
-		self.send(devp2p::Packet::Pong)
-	}
-
-	pub fn send_disconnect(self, reason: devp2p::DisconnectReason) -> SessionSend {
-		self.send(devp2p::Packet::Disconnect(reason))
 	}
 }
 
@@ -190,7 +179,7 @@ impl<A> Future for SessionStart<A> where A: AsyncRead + AsyncWrite {
 						interface,
 						sender,
 						receiver,
-						packet_to_send: None,
+						packets_to_send: VecDeque::new(),
 					};
 					return Ok(session.into());
 				}
@@ -207,15 +196,19 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_ping_pong() {
+	fn test_send_user_message() {
 		let (session_a, session_b) = mock_sessions();
 
-		let _ = session_a.write_handle().send_ping().wait().unwrap();
+		let user_message = devp2p::UserMessage {
+			id: 0x11,
+			data: vec![0x1, 0x2, 0x3].into(),
+		};
+
+		let _ = session_a.write_handle().send(devp2p::Packet::UserMessage(user_message.clone())).wait().unwrap();
 		// we use select, cause both sessions have to be polled to send && receive a message
 		let session_future_a = session_a.into_future();
 		let session_future_b = session_b.into_future();
-		let ((ping, session_b), future_a) = session_future_a.select(session_future_b).wait().ok().unwrap();
-		// TODO:
-		//assert_eq!(ping, Some(devp2p::Packet::Ping));
+		let ((message, session_b), future_a) = session_future_a.select(session_future_b).wait().ok().unwrap();
+		assert_eq!(message, Some(user_message));
 	}
 }
