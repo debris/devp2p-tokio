@@ -19,7 +19,7 @@ const MAX_PAYLOAD_SIZE: usize = (1 << 24) - 1;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Packet {
 	pub protocol: u16,
-	pub data: Vec<u8>,
+	pub data: BytesMut,
 }
 
 #[derive(Clone, Copy)]
@@ -273,7 +273,7 @@ impl Decoder for Codec {
 
 		let packet = Packet {
 			protocol: payload_info.protocol_id,
-			data: packet,
+			data: packet.into(),
 		};
 
 		self.decode_state = DecodeState::Header;
@@ -297,7 +297,7 @@ mod tests {
 			// TODO: as of now, encoder ignores protocol version
 			protocol: 0,
 			// this is ping packet data
-			data: vec![2, 192],
+			data: vec![2, 192].into(),
 		};
 
 		let mut encoded = BytesMut::default();

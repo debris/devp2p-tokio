@@ -1,16 +1,17 @@
 [package]
-name = "devp2p"
+name = "network"
 version = "0.1.0"
 authors = ["debris <marek.kotewicz@gmail.com>"]
 
 [dependencies]
 bytes = "0.4.10"
 ethereum-types = "0.4"
-ethkey = { path = "../parity/ethkey" }
+ethkey = { path = "../parity/accounts/ethkey" }
 futures = "0.1.25"
 keccak-hash = "0.1"
 rand = "0.4"
 rlp = { version = "0.3.0", features = ["ethereum"] }
+rlp_derive = { path = "../parity/util/rlp-derive" }
 rust-crypto = "0.2.34"
 rustc-hex = "1.0"
 tiny-keccak = "1.4"

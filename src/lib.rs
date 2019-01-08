@@ -8,6 +8,8 @@ extern crate rustc_hex;
 extern crate rand;
 extern crate crypto as rcrypto;
 extern crate rlp;
+#[macro_use]
+extern crate rlp_derive;
 extern crate tiny_keccak;
 extern crate tokio_codec;
 extern crate tokio_io;

@@ -24,7 +24,7 @@ impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 
 		let init = InitHandshake {
 			state: InitHandshakeState::WriteAuth(write_all(io, auth_packet.encrypt(remote_public)?)),
-			secret: host.secret().clone(),
+			host_keypair: host.clone(),
 			ecdhe,
 			nonce,
 		};
@@ -40,7 +40,7 @@ impl<A> Handshake<A> where A: AsyncRead + AsyncWrite {
 	pub fn accept(io: A, host: KeyPair, nonce: H256) -> io::Result<Self> {
 		let accept = AcceptHandshake {
 			state: AcceptHandshakeState::ReadAuth(read_exact(io, RawAuthPacket::default())),
-			secret: host.secret().clone(),
+			host_keypair: host.clone(),
 			ecdhe: ethkey::Random.generate()
 				.map_err(|_| io::Error::new(io::ErrorKind::Other, "Handshake::accept failed"))?,
 			nonce,
@@ -68,6 +68,8 @@ impl<A> Future for Handshake<A> where A: AsyncRead + AsyncWrite {
 pub struct HandshakeData {
 	/// True if we initialized the handshake.
 	pub originated: bool,
+	/// Our keypair.
+	pub our_keypair: KeyPair,
 	/// Our ecdh keypair.
 	pub ecdhe: KeyPair,
 	/// Our nonce.
@@ -109,8 +111,8 @@ enum InitHandshakeState<A> {
 struct InitHandshake<A>  {
 	/// State of init handshake.
 	state: InitHandshakeState<A>,
-	/// Our secret.
-	secret: Secret,
+	/// Our keypair.
+	host_keypair: KeyPair,
 	/// Our ecdh keypair.
 	ecdhe: KeyPair,
 	/// Nonce
@@ -133,10 +135,11 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 				},
 				InitHandshakeState::ReadAck { ref mut auth_packet, ref mut ack_packet } => {
 					let (io, raw_ack_packet) = try_ready!(ack_packet.poll());
-					match raw_ack_packet.decrypt(&self.secret) {
+					match raw_ack_packet.decrypt(self.host_keypair.secret()) {
 						Ok(ack_packet) => {
 							let result = HandshakeData {
 								originated: true,
+								our_keypair: self.host_keypair.clone(),
 								ecdhe: self.ecdhe.clone(),
 								nonce: self.nonce,
 								auth_cipher: auth_packet.take().expect("auth_packet is always Some; qed"),
@@ -163,10 +166,11 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 					let (ack_packet_eip8, ack_cipher) = ack_packet_head
 						.take()
 						.expect("ack_packet_head is always Some; qed")
-						.decrypt_eip8(&self.secret, &tail)?;
+						.decrypt_eip8(self.host_keypair.secret(), &tail)?;
 
 					let result = HandshakeData {
 						originated: true,
+						our_keypair: self.host_keypair.clone(),
 						ecdhe: self.ecdhe.clone(),
 						nonce: self.nonce,
 						auth_cipher: auth_packet.take().expect("auth_packet is always Some; qed"),
@@ -211,8 +215,8 @@ enum AcceptHandshakeState<A> {
 struct AcceptHandshake<A>  {
 	/// State of accept handshake.
 	state: AcceptHandshakeState<A>,
-	/// Our secret.
-	secret: Secret,
+	/// Our keypair.
+	host_keypair: KeyPair,
 	/// Our ecdh keypair.
 	ecdhe: KeyPair,
 	/// Nonce
@@ -228,7 +232,7 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 			let next_state = match self.state {
 				AcceptHandshakeState::ReadAuth(ref mut future) => {
 					let (io, raw_auth_packet) = try_ready!(future.poll());
-					match raw_auth_packet.decrypt(&self.secret) {
+					match raw_auth_packet.decrypt(self.host_keypair.secret()) {
 						Ok(auth_packet) => {
 							let ack_packet = AckPacket {
 								ephemeral: *self.ecdhe.public(), 
@@ -239,11 +243,12 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 
 							let result = HandshakeData {
 								originated: false,
+								our_keypair: self.host_keypair.clone(),
 								ecdhe: self.ecdhe.clone(),
 								nonce: self.nonce,
 								auth_cipher: raw_auth_packet.as_ref().to_vec(),
 								ack_cipher: raw_packet.as_ref().to_vec(),
-								remote_ephemeral: auth_packet.ephemeral(&self.secret)?,
+								remote_ephemeral: auth_packet.ephemeral(self.host_keypair.secret())?,
 								remote_nonce: auth_packet.nonce,
 								remote_version: PROTOCOL_VERSION,
 							};
@@ -267,7 +272,7 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 					let (auth_packet_eip8, auth_cipher) = auth_packet_head
 						.take()
 						.expect("auth_packet_head is always Some; qed")
-						.decrypt_eip8(&self.secret, &tail)?;
+						.decrypt_eip8(self.host_keypair.secret(), &tail)?;
 					
 					let ack_packet_eip8 = AckPacketEip8 {
 						ephemeral: *self.ecdhe.public(),
@@ -279,11 +284,12 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 
 					let result = HandshakeData {
 						originated: false,
+						our_keypair: self.host_keypair.clone(),
 						ecdhe: self.ecdhe.clone(),
 						nonce: self.nonce,
 						auth_cipher,
 						ack_cipher: raw_packet.clone(),
-						remote_ephemeral: auth_packet_eip8.ephemeral(&self.secret)?,
+						remote_ephemeral: auth_packet_eip8.ephemeral(self.host_keypair.secret())?,
 						remote_nonce: auth_packet_eip8.nonce,
 						remote_version: auth_packet_eip8.version,
 					};
