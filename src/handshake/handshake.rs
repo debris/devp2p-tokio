@@ -7,7 +7,7 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::io::{read_exact, ReadExact, write_all, WriteAll};
 use super::packet::{RawAckPacket, RawAuthPacket, AuthPacket, AckPacket, AckPacketEip8};
 
-const PROTOCOL_VERSION: u64 = 4;
+const AUTH_PROTOCOL_VERSION: u64 = 4;
 
 /// `Future` used to establish a connection with a remote node.
 pub struct Handshake<A> {
@@ -146,7 +146,7 @@ impl<A> Future for InitHandshake<A> where A: AsyncRead + AsyncWrite {
 								ack_cipher: raw_ack_packet.as_ref().to_vec(),
 								remote_ephemeral: ack_packet.ephemeral,
 								remote_nonce: ack_packet.nonce,
-								remote_version: PROTOCOL_VERSION,
+								remote_version: AUTH_PROTOCOL_VERSION,
 							};
 
 							return Ok((io, result).into())
@@ -250,7 +250,7 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 								ack_cipher: raw_packet.as_ref().to_vec(),
 								remote_ephemeral: auth_packet.ephemeral(self.host_keypair.secret())?,
 								remote_nonce: auth_packet.nonce,
-								remote_version: PROTOCOL_VERSION,
+								remote_version: AUTH_PROTOCOL_VERSION,
 							};
 
 							AcceptHandshakeState::WriteAck { 
@@ -277,7 +277,7 @@ impl<A> Future for AcceptHandshake<A> where A: AsyncRead + AsyncWrite {
 					let ack_packet_eip8 = AckPacketEip8 {
 						ephemeral: *self.ecdhe.public(),
 						nonce: self.nonce,
-						version: PROTOCOL_VERSION,
+						version: AUTH_PROTOCOL_VERSION,
 					};
 
 					let raw_packet = ack_packet_eip8.encrypt_eip8(&auth_packet_eip8.public)?;
@@ -339,13 +339,13 @@ mod tests {
 		assert_eq!(result_a.originated, true);
 		assert_eq!(result_a.nonce, 1.into());
 		assert_eq!(result_a.remote_nonce, 2.into());
-		assert_eq!(result_a.remote_version, PROTOCOL_VERSION);
+		assert_eq!(result_a.remote_version, AUTH_PROTOCOL_VERSION);
 		assert_eq!(result_a.ecdhe.public(), &result_b.remote_ephemeral);
 
 		assert_eq!(result_b.originated, false);
 		assert_eq!(result_b.nonce, 2.into());
 		assert_eq!(result_b.remote_nonce, 1.into());
-		assert_eq!(result_b.remote_version, PROTOCOL_VERSION);
+		assert_eq!(result_b.remote_version, AUTH_PROTOCOL_VERSION);
 		assert_eq!(result_b.ecdhe.public(), &result_a.remote_ephemeral);
 	}
 }

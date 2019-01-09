@@ -63,30 +63,32 @@ impl Decoder for Codec {
 
 		let packet_id = packet.data[0];
 
-		match packet_id {
+		let packet = match packet_id {
 			PACKET_HELLO => {
 				let hello = rlp::decode(&packet.data[1..])
 					.map_err(|_| io::Error::new(io::ErrorKind::Other, "Codec::decode failed"))?;
-				Ok(Some(Packet::Hello(hello)))
+				Packet::Hello(hello)
 			},
 			PACKET_DISCONNECT => {
 				unimplemented!();
 			},
-			PACKET_PING => Ok(Some(Packet::Ping)),
-			PACKET_PONG => Ok(Some(Packet::Pong)),
-			PACKET_GET_PEERS => Ok(Some(Packet::GetPeers)),
-			PACKET_PEERS => Ok(Some(Packet::Peers)),
+			PACKET_PING => Packet::Ping,
+			PACKET_PONG => Packet::Pong,
+			PACKET_GET_PEERS => Packet::GetPeers,
+			PACKET_PEERS => Packet::Peers,
 			PACKET_USER ... PACKET_LAST => {
 				let _ = packet.data.split_to(1);
 				let data = packet.data.take();
-				Ok(Some(Packet::UserMessage(UserMessage {
+				Packet::UserMessage(UserMessage {
 					id: packet_id,
 					data,
-				})))
+				})
 			},
 			_ => {
-				Err(io::Error::new(io::ErrorKind::Other, format!("Codec::decode failed. Unknwon packet_id: {}", packet_id)))
+				return Err(io::Error::new(io::ErrorKind::Other, format!("Codec::decode failed. Unknwon packet_id: {}", packet_id)))
 			},
-		}
+		};
+
+		Ok(Some(packet))
 	}
 }

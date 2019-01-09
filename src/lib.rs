@@ -14,6 +14,8 @@ extern crate tiny_keccak;
 extern crate tokio_codec;
 extern crate tokio_io;
 extern crate tokio_tcp;
+#[macro_use]
+extern crate log;
 
 mod devp2p;
 mod handshake;
@@ -28,3 +30,5 @@ pub use self::handshake::{Handshake, HandshakeData};
 pub use self::rlpx::{Codec, Packet};
 pub use self::session::Session;
 
+/// Crate protocol version. Different to handshake protocol version.
+const PROTOCOL_VERSION: u64 = 5;

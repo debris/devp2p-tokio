@@ -170,9 +170,18 @@ impl<A> Future for SessionStart<A> where A: AsyncRead + AsyncWrite {
 					SessionStartState::ReadHello(interface.into_future())
 				},
 				SessionStartState::ReadHello(ref mut future) => {
-					let (hello, interface) = try_ready!(future.poll().map_err(|e| e.0));
-					// TODO: verify hello
-					// TODO: create session	
+					let (packet, interface) = try_ready!(future.poll().map_err(|e| e.0));
+					match packet {
+						Some(devp2p::Packet::Hello(hello)) => {
+							// TODO: verify hello
+						},
+						None => {
+							return Err(io::Error::new(io::ErrorKind::Other, "SessionStart::poll failed. Connection closed"));
+						},
+						_ => {
+							return Err(io::Error::new(io::ErrorKind::Other, "SessionStart::poll failed. Unexpected packet"));
+						}
+					}
 					
 					let (sender, receiver) = mpsc::channel(5);
 					let session = Session {
