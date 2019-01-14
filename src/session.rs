@@ -17,19 +17,18 @@ use Handshake;
 const PING_INTERVAL: time::Duration = time::Duration::from_secs(5);
 const PONG_TIMEOUT: time::Duration = time::Duration::from_secs(2);
 
-/// A stream yielding items whenever ping should be sent. 
-/// Streams ends if the timeout is not reset before expire time.
-#[derive(Debug)]
 pub enum PingTimeoutStatus {
-	Ping(Delay),
-	Pong(Delay),
+	Idle,
+	WaitingForPong,
 }
 
 pub struct PingTimeout {
 	status: PingTimeoutStatus,
 	clock: Clock,
+	delay: Delay,
 	ping_interval: time::Duration,
 	pong_timeout: time::Duration,
+		
 }
 
 impl Stream for PingTimeout {
@@ -37,26 +36,19 @@ impl Stream for PingTimeout {
 	type Error = io::Error;
 
 	fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-		let mut should_ping = false;
-		loop {
-			let new_status = match self.status {
-				PingTimeoutStatus::Ping(ref mut delay) => {
-					let _ready = try_ready!(
-						delay.poll()
-						.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("PingTimeout::poll failed. {:?}", e)))
-					);
-					should_ping = true;
-					PingTimeoutStatus::Pong(Delay::new(self.clock.now() + self.pong_timeout))
-				},
-				PingTimeoutStatus::Pong(ref mut delay) => {
-					return match delay.poll().map_err(|_| io::Error::new(io::ErrorKind::Other, "PingTimeout::poll failed."))? {
-						Async::NotReady if should_ping => Ok(Async::Ready(Some(()))),
-						Async::NotReady => Ok(Async::NotReady),
-						Async::Ready(_) => Err(io::Error::new(io::ErrorKind::Other, "PingTimeout::poll failed. Pong timeout.")),
-					};
-				}
-			};
-			self.status = new_status;
+		let poll_result = self.delay.poll().map_err(|_| io::Error::new(io::ErrorKind::Other, "PingTimeout::poll failed."));
+		let _ready = try_ready!(poll_result);
+		match self.status {
+			PingTimeoutStatus::Idle => {
+				self.status = PingTimeoutStatus::WaitingForPong;
+				self.delay.reset(self.clock.now() + PONG_TIMEOUT);
+				// register the timeout
+				let _ = self.delay.poll();
+				Ok(Async::Ready(Some(())))
+			},
+			PingTimeoutStatus::WaitingForPong => {
+				Err(io::Error::new(io::ErrorKind::Other, "PingTimeout::poll failed. Pong timeout."))
+			},
 		}
 	}
 }
@@ -64,20 +56,25 @@ impl Stream for PingTimeout {
 impl PingTimeout {
 	fn new_awaiting_for_pong(ping_interval: time::Duration, pong_timeout: time::Duration) -> PingTimeout {
 		let clock = Clock::new();
+		let delay = Delay::new(clock.now() + PONG_TIMEOUT);
 		PingTimeout {
-			status: PingTimeoutStatus::Pong(Delay::new(clock.now() + pong_timeout)),
+			status: PingTimeoutStatus::WaitingForPong,
 			clock,
+			delay,
 			ping_interval,
 			pong_timeout,
 		}
 	}
 
 	fn received_pong(&mut self) -> io::Result<()> {
-		if let PingTimeoutStatus::Ping(_) = self.status {
+		if let PingTimeoutStatus::Idle = self.status {
 			return Err(io::Error::new(io::ErrorKind::Other, "PingTimeout::received_pong failed."));
 		}
 
-		self.status = PingTimeoutStatus::Ping(Delay::new(self.clock.now() + self.ping_interval));
+		self.status = PingTimeoutStatus::Idle;
+		self.delay.reset(self.clock.now() + PING_INTERVAL);
+		// register the timeout
+		let _ = self.delay.poll();
 		Ok(())
 	}
 }
@@ -332,8 +329,10 @@ mod tests {
 		// b reads ping and replies with pong
 		// b reads user message and returns it
 		// a reads pong
-		// time is changed, a sends another ping message
-		// time is changes, a times out without response
+		// time is changed
+		// a sends ping
+		// time is changed
+		// a times out
 
 		mock_time::mocked(|timer, time| {
 				let (session_a, session_b) = mock_sessions();
@@ -349,15 +348,16 @@ mod tests {
 				let session_future_b = session_b.into_future();
 				let ((message, session_b), mut future_a) = session_future_a.select(session_future_b).wait().ok().unwrap();
 				assert_eq!(message, Some(user_message));
-				let _ = future_a.poll();
-				mock_time::advance(timer, time::Duration::from_secs(100));
+				future_a.poll();
+				mock_time::advance(timer, PING_INTERVAL);
+				future_a.poll();
+				mock_time::advance(timer, PONG_TIMEOUT);
 				match future_a.wait() {
 					Ok(_) => {
 						assert!(false, "failed to close the stream");
 					},
 					Err((err, _session)) => {
-						println!("err: {:?}", err);
-						assert!(false);
+						// ok path, pong timeout
 					}
 				}
 		});
