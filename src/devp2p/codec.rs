@@ -1,6 +1,5 @@
 use std::io;
 use bytes::BytesMut;
-use ethereum_types::Public;
 use rlp::{self, RlpStream};
 use tokio_codec::{Encoder, Decoder};
 use rlpx;

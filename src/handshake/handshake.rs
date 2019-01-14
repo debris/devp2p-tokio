@@ -1,6 +1,6 @@
 use std::io;
 use ethereum_types::{Public, H256};
-use ethkey::{self, Generator, Secret, KeyPair};
+use ethkey::{self, Generator, KeyPair};
 use futures::{Future, Poll};
 use futures::future::Either;
 use tokio_io::{AsyncRead, AsyncWrite};

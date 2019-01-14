@@ -2,14 +2,12 @@ use std::{io, time};
 use std::collections::VecDeque;
 use futures::{Future, Poll, Sink, AsyncSink, Async, Stream, stream, StartSend};
 use futures::sink;
-use futures::sync::mpsc;
 use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 use ethkey::KeyPair;
 use ethereum_types::{Public, H256};
 use tokio_timer::Delay;
 use tokio_timer::clock::Clock;
-use rlp::{self, RlpStream};
 use devp2p;
 use rlpx;
 use Handshake;
@@ -41,9 +39,10 @@ impl Stream for PingTimeout {
 		match self.status {
 			PingTimeoutStatus::Idle => {
 				self.status = PingTimeoutStatus::WaitingForPong;
-				self.delay.reset(self.clock.now() + PONG_TIMEOUT);
+				self.delay.reset(self.clock.now() + self.pong_timeout);
 				// register the timeout
-				let _ = self.delay.poll();
+				let _ = self.delay.poll()
+					.map_err(|_| io::Error::new(io::ErrorKind::Other, "PingTimeout::poll failed. Delay reregister failed."))?;
 				Ok(Async::Ready(Some(())))
 			},
 			PingTimeoutStatus::WaitingForPong => {
@@ -56,7 +55,7 @@ impl Stream for PingTimeout {
 impl PingTimeout {
 	fn new_awaiting_for_pong(ping_interval: time::Duration, pong_timeout: time::Duration) -> PingTimeout {
 		let clock = Clock::new();
-		let delay = Delay::new(clock.now() + PONG_TIMEOUT);
+		let delay = Delay::new(clock.now() + pong_timeout);
 		PingTimeout {
 			status: PingTimeoutStatus::WaitingForPong,
 			clock,
@@ -72,9 +71,10 @@ impl PingTimeout {
 		}
 
 		self.status = PingTimeoutStatus::Idle;
-		self.delay.reset(self.clock.now() + PING_INTERVAL);
+		self.delay.reset(self.clock.now() + self.ping_interval);
 		// register the timeout
-		let _ = self.delay.poll();
+		let _ = self.delay.poll()
+			.map_err(|_| io::Error::new(io::ErrorKind::Other, "PingTimeout::received_pong failed. Delay reregister failed."))?;
 		Ok(())
 	}
 }
@@ -174,46 +174,15 @@ impl<A> Stream for Session<A> where A: AsyncRead + AsyncWrite {
 					self.packets_to_send.push_back(devp2p::Packet::Pong);
 				},
 				devp2p::Packet::Pong => {
-					self.ping_timeout.received_pong();
-					return Ok(Async::NotReady)
+					self.ping_timeout.received_pong()?;
 				},
 				devp2p::Packet::GetPeers | devp2p::Packet::Peers => {
 					// we ignore these packets
-					return Ok(Async::NotReady)
 				}
 				devp2p::Packet::UserMessage(message) => {
 					return Ok(Async::Ready(Some(message)))
 				}
 			}
-		}
-	}
-}
-
-pub struct SessionSend {
-	future: sink::Send<mpsc::Sender<devp2p::Packet>>,
-}
-
-impl Future for SessionSend {
-	type Item = ();
-	type Error = io::Error;
-
-	fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-		let _= try_ready!(
-			self.future.poll()
-				.map_err(|_| io::Error::new(io::ErrorKind::Other, "SessionSend::poll failed"))
-		);
-		Ok(Async::Ready(()))
-	}
-}
-
-pub struct SessionWrite {
-	sender: mpsc::Sender<devp2p::Packet>,
-}
-
-impl SessionWrite {
-	pub fn send(self, packet: devp2p::Packet) -> SessionSend {
-		SessionSend {
-			future: self.sender.send(packet)
 		}
 	}
 }
@@ -292,19 +261,13 @@ impl<A> Future for SessionStart<A> where A: AsyncRead + AsyncWrite {
 #[cfg(test)]
 mod tests {
 	use std::error::Error;
-	use std::sync::Arc;
-	use parking_lot::Mutex;
-	use tokio_executor;
-	use tokio_executor::park;
-	use tokio_timer::{self, Timer};
-	use tokio_timer::clock::{self, Now};
 	use mock::mock_sessions;
 	use mock_time;
 	use super::*;
 
 	#[test]
 	fn test_ping_timeout() {
-		mock_time::mocked(|timer, time| {
+		mock_time::mocked(|timer, _time| {
 			let ping_interval = time::Duration::from_secs(5);
 			let pong_timeout = time::Duration::from_secs(2);
 			let mut pt = PingTimeout::new_awaiting_for_pong(ping_interval, pong_timeout);
@@ -334,7 +297,7 @@ mod tests {
 		// time is changed
 		// a times out
 
-		mock_time::mocked(|timer, time| {
+		mock_time::mocked(|timer, _time| {
 				let (session_a, session_b) = mock_sessions();
 
 				let user_message = devp2p::UserMessage {
@@ -346,11 +309,11 @@ mod tests {
 				// we use select, cause both sessions have to be polled to send && receive a message
 				let session_future_a = session_a.into_future();
 				let session_future_b = session_b.into_future();
-				let ((message, session_b), mut future_a) = session_future_a.select(session_future_b).wait().ok().unwrap();
+				let ((message, _session_b), mut future_a) = session_future_a.select(session_future_b).wait().ok().unwrap();
 				assert_eq!(message, Some(user_message));
-				future_a.poll();
+				let _ = future_a.poll();
 				mock_time::advance(timer, PING_INTERVAL);
-				future_a.poll();
+				let _ = future_a.poll();
 				mock_time::advance(timer, PONG_TIMEOUT);
 				match future_a.wait() {
 					Ok(_) => {
@@ -358,6 +321,7 @@ mod tests {
 					},
 					Err((err, _session)) => {
 						// ok path, pong timeout
+						assert_eq!(err.description(), "PingTimeout::poll failed. Pong timeout.");
 					}
 				}
 		});
