@@ -27,6 +27,7 @@ mod mock_time;
 mod devp2p;
 mod handshake;
 mod host;
+mod ping;
 mod rlpx;
 mod session;
 
