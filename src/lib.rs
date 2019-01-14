@@ -20,6 +20,10 @@ extern crate tokio_timer;
 extern crate log;
 extern crate parking_lot;
 
+#[cfg(test)]
+#[macro_use]
+mod mock_time;
+
 mod devp2p;
 mod handshake;
 mod host;
@@ -28,8 +32,6 @@ mod session;
 
 #[cfg(test)]
 mod mock;
-#[cfg(test)]
-mod mock_time;
 
 pub use self::handshake::{Handshake, HandshakeData};
 pub use self::rlpx::{Codec, Packet};
