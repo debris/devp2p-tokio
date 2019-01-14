@@ -12,10 +12,13 @@ extern crate rlp;
 extern crate rlp_derive;
 extern crate tiny_keccak;
 extern crate tokio_codec;
+extern crate tokio_executor;
 extern crate tokio_io;
 extern crate tokio_tcp;
+extern crate tokio_timer;
 #[macro_use]
 extern crate log;
+extern crate parking_lot;
 
 mod devp2p;
 mod handshake;
@@ -25,6 +28,8 @@ mod session;
 
 #[cfg(test)]
 mod mock;
+#[cfg(test)]
+mod mock_time;
 
 pub use self::handshake::{Handshake, HandshakeData};
 pub use self::rlpx::{Codec, Packet};
